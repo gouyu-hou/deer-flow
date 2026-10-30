@@ -196,6 +196,18 @@ class SlackChannel(Channel):
             socket_client.connect()
         except Exception:
             logger.exception("[Slack] Socket Mode connection failed; the channel will not receive events")
+        finally:
+            # connect() returning or raising both mean this client can no longer
+            # deliver events. Leaving ``_running`` True made ChannelService treat
+            # a dead transport as healthy (``_transport_running`` /
+            # ``ensure_channel_ready`` short-circuit on ``is_running``), so a
+            # failed dial at startup — bad token, blocked network, failed
+            # ``apps.connections.open`` — left the channel silently deaf until a
+            # manual restart. Telegram clears the flag in its worker's finally
+            # for the same reason. Guarded so a superseded client cannot clear
+            # the state of the one that replaced it.
+            if socket_client is self._socket_client:
+                self._running = False
 
     async def stop(self) -> None:
         self._running = False

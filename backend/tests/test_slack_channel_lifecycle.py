@@ -241,3 +241,46 @@ async def test_real_sdk_late_connection_is_closed_before_stop_completes(monkeypa
                 await asyncio.wait_for(asyncio.to_thread(sdk.current_session_runner.shutdown), 3)
             for peer in peers:
                 peer.transport.abort()
+
+
+async def test_failed_socket_mode_dial_clears_running_flag(caplog):
+    """A failed dial must not leave the channel reporting itself as healthy.
+
+    ``ChannelService.ensure_channel_ready`` / ``_transport_running`` short-circuit
+    on ``is_running``, so a True flag after a dead connect meant the channel was
+    never restarted and stayed silently deaf.
+    """
+    channel = SlackChannel(MessageBus(), {})
+    socket_client = MagicMock()
+    socket_client.connect.side_effect = RuntimeError("apps.connections.open failed")
+    channel._socket_client = socket_client
+    channel._running = True
+
+    channel._connect_socket_mode(socket_client)
+
+    assert channel.is_running is False
+    assert "Socket Mode connection failed" in caplog.text
+
+
+async def test_finished_socket_mode_dial_clears_running_flag():
+    """connect() returning normally also ends the event stream."""
+    channel = SlackChannel(MessageBus(), {})
+    socket_client = MagicMock()
+    channel._socket_client = socket_client
+    channel._running = True
+
+    channel._connect_socket_mode(socket_client)
+
+    assert channel.is_running is False
+
+
+async def test_superseded_client_does_not_clear_the_current_flag():
+    channel = SlackChannel(MessageBus(), {})
+    stale, current = MagicMock(), MagicMock()
+    stale.connect.side_effect = RuntimeError("stale dial")
+    channel._socket_client = current
+    channel._running = True
+
+    channel._connect_socket_mode(stale)
+
+    assert channel.is_running is True
