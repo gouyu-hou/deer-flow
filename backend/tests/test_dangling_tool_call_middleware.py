@@ -1109,6 +1109,84 @@ class TestMalformedToolCallIdRecovery:
         assert all(getattr(m, "content", None) != "RESULT OF NEITHER" for m in patched)
         assert [m.status for m in patched[1:]] == ["error", "error"]
 
+    def test_invalid_sibling_does_not_hide_the_result_of_the_call_that_ran(self):
+        """An invalid call never executes, so it cannot make a real result ambiguous.
+
+        Calls that failed argument parsing live in ``invalid_tool_calls`` and never
+        reach ``ToolNode``; the only ``ToolMessage`` they can own is the placeholder
+        this middleware injects. Counting them as pairing candidates lets an
+        *unexecuted* sibling veto the result of the call that actually ran — and the
+        outcome then depends on what the malformed call happened to be named, since a
+        sibling with a different name leaves a single candidate and pairs fine.
+        """
+        mw = DanglingToolCallMiddleware()
+        msgs = [
+            AIMessage(
+                content="",
+                tool_calls=[_tc("bash", "")],
+                invalid_tool_calls=[_invalid_tc(name="bash", tc_id="", error="Failed to parse tool arguments: malformed JSON")],
+            ),
+            ToolMessage(content="REAL RESULT", tool_call_id="", name="bash"),
+        ]
+
+        patched = mw._build_patched_messages(msgs)
+
+        assert patched is not None
+        assert patched[1].content == "REAL RESULT"
+        assert patched[1].tool_call_id == patched[0].tool_calls[0]["id"]
+        assert patched[1].status != "error"
+        assert patched[2].status == "error"
+        assert patched[2].tool_call_id == patched[0].invalid_tool_calls[0]["id"]
+
+    def test_invalid_sibling_does_not_break_the_positional_alignment(self):
+        """Position still lines up parallel calls once the invalid sibling is excluded.
+
+        Two indistinguishable ``bash`` calls plus one malformed ``bash``: the turn is
+        fully answered *for the calls that ran*, which is what the positional tie-break
+        needs. An invalid sibling cannot answer anything, so counting it leaves the
+        alignment looking broken and drops both real results.
+        """
+        mw = DanglingToolCallMiddleware()
+        msgs = [
+            AIMessage(
+                content="",
+                tool_calls=[_tc("bash", ""), _tc("bash", "")],
+                invalid_tool_calls=[_invalid_tc(name="bash", tc_id="", error="Failed to parse tool arguments: malformed JSON")],
+            ),
+            ToolMessage(content="RESULT A", tool_call_id="", name="bash"),
+            ToolMessage(content="RESULT B", tool_call_id="", name="bash"),
+        ]
+
+        patched = mw._build_patched_messages(msgs)
+
+        assert patched is not None
+        first_id, second_id = (tc["id"] for tc in patched[0].tool_calls)
+        assert [m.tool_call_id for m in patched[1:3]] == [first_id, second_id]
+        assert [m.content for m in patched[1:3]] == ["RESULT A", "RESULT B"]
+        assert patched[3].status == "error"
+
+    def test_invalid_call_still_claims_a_result_when_no_sibling_ran(self):
+        """The narrowing must not widen: a lone invalid call keeps its result.
+
+        ``test_raw_view_shadowed_by_invalid_calls_gets_no_placeholder`` pins this shape —
+        the shadowed malformed ``write_file`` owns the id-less result so the wire stays
+        well-formed. Excluding invalid calls outright would drop that result and leave
+        the call answered only by a placeholder, so the exclusion applies only while an
+        executable sibling is also eligible.
+        """
+        mw = DanglingToolCallMiddleware()
+        msgs = [
+            _ai_with_invalid_tool_calls([_invalid_tc(name="write_file", tc_id="")]),
+            ToolMessage(content="REAL RESULT", tool_call_id="", name="write_file"),
+        ]
+
+        patched = mw._build_patched_messages(msgs)
+
+        assert patched is not None
+        assert len(patched) == 2
+        assert patched[1].content == "REAL RESULT"
+        assert patched[1].tool_call_id == patched[0].invalid_tool_calls[0]["id"]
+
     def test_valid_ids_are_left_byte_for_byte_unchanged(self):
         """Delta-set guard: normalization must only fire on malformed ids.
 

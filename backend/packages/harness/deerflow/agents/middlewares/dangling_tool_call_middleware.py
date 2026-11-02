@@ -76,7 +76,8 @@ def _relabel_tool_call_ids(tool_calls: list, msg_index: int, source: str) -> tup
     model-bound message agree on it without threading state between them.
 
     Returns the rewritten list, one ``{original, synthetic, name}`` claim entry per
-    relabelled call, and whether anything changed.
+    relabelled call, and whether anything changed. A claim starts out executable; the
+    caller marks the ones minted for ``invalid_tool_calls``.
     """
     relabeled: list = []
     assigned: list[dict] = []
@@ -88,7 +89,7 @@ def _relabel_tool_call_ids(tool_calls: list, msg_index: int, source: str) -> tup
         synthetic = f"{_SYNTHETIC_TOOL_CALL_ID_PREFIX}{msg_index}_{source}_{position}"
         relabeled.append({**tool_call, "id": synthetic})
         changed = True
-        assigned.append({"original": tool_call.get("id"), "synthetic": synthetic, "name": _tool_call_name(tool_call)})
+        assigned.append({"original": tool_call.get("id"), "synthetic": synthetic, "name": _tool_call_name(tool_call), "invalid": False})
     return relabeled, assigned, changed
 
 
@@ -120,10 +121,19 @@ def _claim_synthetic_id(open_calls: list[dict], result: ToolMessage, positional:
       A *missing* result means a call was interrupted — this middleware's own trigger —
       so the surviving results can no longer be trusted to line up with the calls.
 
+    Calls that failed argument parsing are not pairing partners while a call that could
+    actually run is eligible: they sit in ``invalid_tool_calls``, never reach
+    ``ToolNode``, and can only ever own the placeholder this middleware injects.
+    Counting them would let a sibling that did not run veto the result of the call
+    that did, and make the outcome turn on the malformed call's name. They stay
+    eligible when they are the only compatible calls, which is the shadowed
+    single-call shape the placeholder recovery already relies on.
+
     Returning ``None`` leaves the result malformed for the orphan pass to drop, which is
     what an unattributable result gets today — better than inventing a pairing.
     """
-    candidates = [position for position, entry in enumerate(open_calls) if entry["original"] == result.tool_call_id and _names_can_pair(entry["name"], result.name)]
+    compatible = [position for position, entry in enumerate(open_calls) if entry["original"] == result.tool_call_id and _names_can_pair(entry["name"], result.name)]
+    candidates = [position for position in compatible if not open_calls[position]["invalid"]] or compatible
     if not candidates or (len(candidates) > 1 and not positional):
         return None
     return open_calls.pop(candidates[0])["synthetic"]
@@ -403,13 +413,22 @@ class DanglingToolCallMiddleware(AgentMiddleware[AgentState]):
 
                 for source, tool_calls, field in sources:
                     relabeled, source_assigned, changed = _relabel_tool_call_ids(tool_calls, index, source)
+                    if source == "invalid":
+                        # These calls never execute, so no result can answer one.
+                        for entry in source_assigned:
+                            entry["invalid"] = True
                     assigned.extend(source_assigned)
                     if not changed:
                         continue
                     update[field] = {**additional_kwargs, "tool_calls": relabeled} if field == "additional_kwargs" else relabeled
 
                 open_calls = assigned
-                positional = _turn_malformed_result_count(messages, index) == len(assigned)
+                # Alignment is claimed for the calls that can run: an invalid sibling
+                # answers nothing, so counting it here would report a fully answered
+                # turn as misaligned and drop every real result in it. A turn of only
+                # invalid calls keeps its old denominator.
+                claimable = sum(1 for entry in assigned if not entry["invalid"])
+                positional = _turn_malformed_result_count(messages, index) == (claimable or len(assigned))
                 if update:
                     rewritten[index] = msg.model_copy(update=update)
                 continue
