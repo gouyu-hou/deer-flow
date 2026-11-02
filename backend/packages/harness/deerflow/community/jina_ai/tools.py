@@ -1,10 +1,13 @@
 import asyncio
+import logging
 
 from langchain.tools import tool
 
 from deerflow.community.jina_ai.jina_client import JinaClient
 from deerflow.config import get_app_config
 from deerflow.utils.readability import ReadabilityExtractor
+
+logger = logging.getLogger(__name__)
 
 readability_extractor = ReadabilityExtractor()
 
@@ -24,29 +27,26 @@ def _coerce_bool(value: object, default: bool) -> bool:
 def _coerce_timeout(value: object, default: int) -> int:
     """Coerce a configured request timeout into whole seconds.
 
-    Positive integers and integer strings are kept. Everything else falls back to
-    ``default``, because the value is sent twice: as the ``X-Timeout`` header and as
-    the per-request HTTPX timeout. ``0`` makes HTTPX give up before connecting,
-    negatives are rejected outright, and an integer too large to become a float
-    (``10**400``) raises ``OverflowError`` when the socket applies it. Booleans
-    (``timeout: off`` parses as ``False``) and non-numeric strings already fell back.
+    Positive integers and integer strings are kept. Anything else the operator
+    actually wrote falls back to ``default`` with a warning, because the value is
+    sent twice: as the ``X-Timeout`` header and as the per-request HTTPX timeout.
+    ``0`` makes HTTPX give up before connecting, negatives are rejected outright,
+    and an integer too large to become a float (``10**400``) raises
+    ``OverflowError`` when the socket applies it. ``None`` is the "key absent"
+    sentinel and stays silent — this runs on every fetch.
     """
-    if isinstance(value, bool):
+    if value is None:
         return default
-    if isinstance(value, int):
-        timeout = value
-    elif isinstance(value, str):
+    timeout: int | None = None
+    if not isinstance(value, bool) and isinstance(value, (int, str)):
         try:
             timeout = int(value)
-        except ValueError:
-            return default
-    else:
-        return default
-    if timeout <= 0:
-        return default
-    try:
-        float(timeout)
-    except OverflowError:
+            # float() here is the conversion socket.settimeout() applies later.
+            float(timeout)
+        except (ValueError, OverflowError):
+            timeout = None
+    if timeout is None or timeout <= 0:
+        logger.warning("Jina web_fetch: unusable timeout %r in config; using %ss", value, default)
         return default
     return timeout
 
