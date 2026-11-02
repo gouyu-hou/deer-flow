@@ -22,16 +22,33 @@ def _coerce_bool(value: object, default: bool) -> bool:
 
 
 def _coerce_timeout(value: object, default: int) -> int:
+    """Coerce a configured request timeout into whole seconds.
+
+    Positive integers and integer strings are kept. Everything else falls back to
+    ``default``, because the value is sent twice: as the ``X-Timeout`` header and as
+    the per-request HTTPX timeout. ``0`` makes HTTPX give up before connecting,
+    negatives are rejected outright, and an integer too large to become a float
+    (``10**400``) raises ``OverflowError`` when the socket applies it. Booleans
+    (``timeout: off`` parses as ``False``) and non-numeric strings already fell back.
+    """
     if isinstance(value, bool):
         return default
     if isinstance(value, int):
-        return value
-    if isinstance(value, str):
+        timeout = value
+    elif isinstance(value, str):
         try:
-            return int(value)
+            timeout = int(value)
         except ValueError:
             return default
-    return default
+    else:
+        return default
+    if timeout <= 0:
+        return default
+    try:
+        float(timeout)
+    except OverflowError:
+        return default
+    return timeout
 
 
 def _coerce_proxy(value: object) -> str | None:
