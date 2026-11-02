@@ -69,6 +69,21 @@ def _names_can_pair(call_name: object, result_name: object) -> bool:
     return call_name.strip() == result_name.strip()
 
 
+def _pairing_key(tool_call_id: object) -> str | None:
+    """Key under which every unusable id compares equal.
+
+    The call keeps the provider's original value (``None`` when the field was
+    serialized as JSON ``null``), but a ``ToolMessage`` can only carry a ``str``: a
+    middleware that answers a call itself — the read-before-write gate, a blocked
+    deferred tool, an unknown artifact handle, a suppressed clarification — has to
+    write ``""`` there. Comparing the raw originals therefore never matches
+    ``None`` against ``""``, and the answer is dropped as an orphan while the call
+    is reported as interrupted. Both spellings mean "no id", so they pair under one
+    key; usable ids keep comparing by value.
+    """
+    return tool_call_id if _valid_tool_call_id(tool_call_id) else None
+
+
 def _relabel_tool_call_ids(tool_calls: list, msg_index: int, source: str) -> tuple[list, list[dict], bool]:
     """Replace malformed ids in one tool-call list with stable synthetic ids.
 
@@ -123,7 +138,7 @@ def _claim_synthetic_id(open_calls: list[dict], result: ToolMessage, positional:
     Returning ``None`` leaves the result malformed for the orphan pass to drop, which is
     what an unattributable result gets today — better than inventing a pairing.
     """
-    candidates = [position for position, entry in enumerate(open_calls) if entry["original"] == result.tool_call_id and _names_can_pair(entry["name"], result.name)]
+    candidates = [position for position, entry in enumerate(open_calls) if _pairing_key(entry["original"]) == _pairing_key(result.tool_call_id) and _names_can_pair(entry["name"], result.name)]
     if not candidates or (len(candidates) > 1 and not positional):
         return None
     return open_calls.pop(candidates[0])["synthetic"]

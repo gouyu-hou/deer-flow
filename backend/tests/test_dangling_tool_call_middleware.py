@@ -952,6 +952,31 @@ class TestMalformedToolCallIdRecovery:
         assert patched[1].content == "REAL RESULT"
         assert patched[1].tool_call_id == patched[0].tool_calls[0]["id"]
 
+    def test_none_id_call_reclaims_a_result_a_middleware_built_with_an_empty_id(self):
+        """A ``None``-id call owns the ``""`` result a tool-side middleware builds.
+
+        Middlewares that answer a call without executing it (the read-before-write
+        gate, a blocked deferred tool, an unknown artifact handle, a suppressed
+        clarification) have to build the ``ToolMessage`` themselves, and
+        ``ToolMessage.tool_call_id`` is a ``str`` — an id-less call can only become
+        ``""``. Pairing on the raw originals misses that, because the call's original
+        is ``None`` and ``None != ""``, so the answer a middleware just produced is
+        dropped as an orphan and the call is reported as interrupted instead.
+        """
+        mw = DanglingToolCallMiddleware()
+        msgs = [
+            _ai_with_tool_calls([_tc("write_file", None)]),
+            ToolMessage(content="Error: read the file before writing it", tool_call_id="", name="write_file"),
+        ]
+
+        patched = mw._build_patched_messages(msgs)
+
+        assert patched is not None
+        assert len(patched) == 2
+        assert isinstance(patched[1], ToolMessage)
+        assert patched[1].content == "Error: read the file before writing it"
+        assert patched[1].tool_call_id == patched[0].tool_calls[0]["id"]
+
     def test_dangling_call_does_not_consume_a_later_turns_result(self):
         """A result answers the turn that issued it, never an earlier dangling call.
 
