@@ -137,6 +137,26 @@ class TestWriteGate:
         assert result.tool_call_id == "call-1"
         assert "read" in result.content.lower()
 
+    def test_blocked_write_for_a_call_without_an_id_reports_no_id(self):
+        """The block must echo the call's id, and an absent one must not be invented.
+
+        ``str(tool_call.get("id", ""))`` substitutes only for a *missing key*: an
+        explicit ``null`` becomes the literal string ``"None"``. That is a usable-looking
+        id the transcript-repair pass will never claim, so the block is orphan-dropped
+        and the model is told the call was interrupted; every id-less call also collides
+        on that one value. A ``ToolMessage`` can only carry ``str``, so the absent id has
+        to be written as ``""`` — the spelling the repair pass already understands.
+        """
+        mw = _middleware({self.PATH: "v1"})
+        request = _make_request("write_file", {"description": "d", "path": self.PATH, "content": "v2"}, tool_call_id=None)
+        handler = MagicMock()
+
+        result = mw.wrap_tool_call(request, handler)
+
+        handler.assert_not_called()
+        assert result.status == "error"
+        assert result.tool_call_id == ""
+
     def test_append_without_read_blocked(self):
         mw = _middleware({self.PATH: "v1"})
         request = _make_request("write_file", {"description": "d", "path": self.PATH, "content": "more", "append": True})

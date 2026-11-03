@@ -292,6 +292,22 @@ def test_blocked_tool_is_intercepted_without_calling_handler():
     assert "[TOOL_BLOCKED]" in result.content
 
 
+def test_blocked_message_for_a_call_without_an_id_reports_no_id():
+    """An absent id is written as ``""``, not as the literal ``"None"``.
+
+    ``str(tool_call.get("id", ""))`` substitutes only for a *missing key*, so an
+    explicit ``null`` reaches the message as ``"None"`` — a usable-looking id no
+    transcript-repair pass can ever claim, which makes the block an orphan and tells
+    the model the call was interrupted. Every id-less call would also collide on it.
+    """
+    mw = _make_mw()
+    request = SimpleNamespace(tool_call={"name": "web_search", "id": None}, runtime=_make_runtime())
+
+    message = mw._make_blocked_message(request, "web_search", "stagnated")
+
+    assert message.tool_call_id == ""
+
+
 # ---------------------------------------------------------------------------
 # Scenario 4b: Recoverable errors never escalate to BLOCKED — WARNED is terminal
 

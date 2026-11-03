@@ -389,7 +389,8 @@ class ToolProgressMiddleware(AgentMiddleware[AgentState]):
     def _make_blocked_message(self, request: ToolCallRequest, tool_name: str, block_reason: str) -> ToolMessage:
         return ToolMessage(
             content=f"[TOOL_BLOCKED] {block_reason}",
-            tool_call_id=str(request.tool_call.get("id", "")),
+            # `or ""`, not a `get` default: an explicit null would be stringified to "None".
+            tool_call_id=str(request.tool_call.get("id") or ""),
             name=tool_name,
             status="error",
             additional_kwargs={
