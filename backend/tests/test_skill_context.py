@@ -221,6 +221,37 @@ class TestExtractSkills:
         out = extract_skills(msgs, skills_root=_ROOT, read_tool_names=_READ)
         assert [e["name"] for e in out] == ["a", "b"]
 
+    def test_repeated_tool_call_id_across_turns_keeps_both_skill_reads(self, caplog):
+        """A reused call id must not shadow the earlier turn's skill read.
+
+        Tool-call ids are unique per response, not per conversation: a later turn
+        that reads another SKILL.md under an id an earlier turn already used must
+        pair with its own call rather than inherit the later call's path.
+        """
+        msgs = [
+            _ai_read("call_0", "/mnt/skills/public/a/SKILL.md"),
+            ToolMessage(
+                content="A",
+                tool_call_id="call_0",
+                id="tm1",
+                additional_kwargs=_skill_metadata("/mnt/skills/public/a/SKILL.md", "A"),
+            ),
+            _ai_read("call_0", "/mnt/skills/custom/b/SKILL.md"),
+            ToolMessage(
+                content="B",
+                tool_call_id="call_0",
+                id="tm2",
+                additional_kwargs=_skill_metadata("/mnt/skills/custom/b/SKILL.md", "B"),
+            ),
+        ]
+
+        with caplog.at_level("WARNING", logger="deerflow.agents.middlewares.skill_context"):
+            out = extract_skills(msgs, skills_root=_ROOT, read_tool_names=_READ)
+
+        assert [e["name"] for e in out] == ["a", "b"]
+        assert [e["loaded_at"] for e in out] == [1, 3]
+        assert "mismatched skill read metadata" not in caplog.text
+
     def test_extract_skills_prefers_metadata_only_when_path_matches_read_call(self):
         msgs = [
             _ai_read("r1", "/mnt/skills/public/data-analysis/SKILL.md"),
