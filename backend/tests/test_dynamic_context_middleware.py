@@ -727,6 +727,63 @@ def test_first_turn_injection_with_unguarded_history_targets_last_user_message()
     assert [m.id for m in merged].index("u1") < [m.id for m in merged].index("u2__user")
 
 
+def test_derived_user_id_taken_by_a_caller_message_keeps_both_messages():
+    """A caller message already holding ``{id}__user`` must not be replaced.
+
+    The ID-swap appends its user copy under the derived id ``{id}__user``.
+    Caller-supplied ids are preserved verbatim, so a request can legitimately
+    carry its own message with exactly that id — ``add_messages`` would then
+    treat the copy as that message's replacement and silently drop the
+    caller's content (issue #7881). The reminder must degrade to a fresh,
+    non-colliding id instead of rewriting history.
+    """
+    mw = _make_middleware()
+    state = {
+        "messages": [
+            HumanMessage(content="first", id="turn"),
+            HumanMessage(content="second", id="turn__user"),
+        ]
+    }
+
+    with mock.patch("deerflow.agents.lead_agent.prompt._get_memory_context", return_value=""), mock.patch("deerflow.agents.middlewares.dynamic_context_middleware.datetime") as mock_dt:
+        mock_dt.now.return_value.strftime.return_value = "2026-05-08, Friday"
+        result = mw.before_agent(state, _fake_runtime())
+
+    assert result is not None
+    merged = add_messages(state["messages"], result["messages"])
+    humans = [m for m in merged if isinstance(m, HumanMessage)]
+    assert [(m.id, m.content) for m in humans] == [("turn", "first"), ("turn__user", "second")]
+    # The turn is still anchored: the reminder is injected, just under an id
+    # that no message in the request already owns.
+    reminders = [m for m in merged if m.additional_kwargs.get(_DYNAMIC_CONTEXT_REMINDER_KEY)]
+    assert len(reminders) == 1
+    assert reminders[0].id not in {"turn", "turn__user"}
+
+
+def test_derived_memory_id_taken_by_a_caller_message_is_not_overwritten():
+    """A caller message already holding ``{id}__memory`` must not be replaced.
+
+    Same collision on the memory half of the swap: the block is derived from the
+    target's id, and a caller-supplied id can already own that name.
+    """
+    mw = _make_middleware()
+    state = {
+        "messages": [
+            HumanMessage(content="remembered", id="turn__memory"),
+            HumanMessage(content="first", id="turn"),
+        ]
+    }
+
+    with mock.patch("deerflow.agents.lead_agent.prompt._get_memory_context", return_value="memory content"), mock.patch("deerflow.agents.middlewares.dynamic_context_middleware.datetime") as mock_dt:
+        mock_dt.now.return_value.strftime.return_value = "2026-05-08, Friday"
+        result = mw.before_agent(state, _fake_runtime())
+
+    assert result is not None
+    merged = add_messages(state["messages"], result["messages"])
+    caller = [m for m in merged if isinstance(m, HumanMessage) and m.content == "remembered"]
+    assert [m.id for m in caller] == ["turn__memory"]
+
+
 # ---------------------------------------------------------------------------
 # Midnight crossing
 # ---------------------------------------------------------------------------

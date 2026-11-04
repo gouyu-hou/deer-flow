@@ -509,6 +509,7 @@ class DynamicContextMiddleware(AgentMiddleware):
         memory_content: str | None = None,
         *,
         reminder_date: str | None = None,
+        taken_ids: frozenset[str] | None = None,
     ) -> list[SystemMessage | HumanMessage]:
         """Return messages using the ID-swap technique.
 
@@ -523,8 +524,19 @@ class DynamicContextMiddleware(AgentMiddleware):
         input (#3630).  Memory is deliberately kept as HumanMessage so
         user-influenceable content does not gain system authority (OWASP LLM01)
         — and it deliberately never carries ``reminder_date``.
+
+        *taken_ids* is every message id the transcript already holds. Caller
+        ids are preserved verbatim (see ``normalize_input``), so one of them can
+        already own a derived name below; ``add_messages`` keys on id, so
+        emitting that name would replace the caller's message instead of
+        appending ours and silently drop its content (#7881). In that case the
+        reminder is appended under a fresh id and the caller's message is left
+        alone — losing the turn's date context is recoverable, losing a user
+        message is not.
         """
         stable_id = original.id or str(uuid.uuid4())
+        owner_id = str(stable_id)
+        taken = taken_ids or frozenset()
         messages: list[SystemMessage | HumanMessage] = []
 
         reminder_kwargs = {
@@ -534,6 +546,33 @@ class DynamicContextMiddleware(AgentMiddleware):
         }
         if reminder_date is not None:
             reminder_kwargs[_REMINDER_DATE_KEY] = reminder_date
+
+        def _free_id(suffix: str) -> str:
+            candidate = f"{owner_id}{suffix}"
+            index = 2
+            while candidate in taken:
+                candidate = f"{owner_id}{suffix}-{index}"
+                index += 1
+            return candidate
+
+        memory_kwargs = {
+            "hide_from_ui": True,
+            _DYNAMIC_CONTEXT_REMINDER_KEY: True,
+            **provenance_kwargs(ContentKind.MEMORY, "dynamic_context_memory"),
+        }
+        user_copy_id = f"{owner_id}{INJECTED_USER_MESSAGE_ID_SUFFIX}"
+        collides = user_copy_id in taken or (bool(memory_content) and f"{owner_id}__memory" in taken)
+        if collides:
+            logger.warning(
+                "DynamicContextMiddleware: derived context id for HumanMessage id=%r is already owned by another message; appending the reminder under a fresh id instead of re-keying the caller's message",
+                original.id,
+            )
+            reminder_id = _free_id("__context")
+            messages.append(SystemMessage(content=reminder_content, id=reminder_id, additional_kwargs=reminder_kwargs))
+            if memory_content:
+                messages.append(HumanMessage(content=memory_content, id=f"{reminder_id}__memory", additional_kwargs=memory_kwargs))
+            return messages
+
         messages.append(
             SystemMessage(
                 content=reminder_content,
@@ -547,11 +586,7 @@ class DynamicContextMiddleware(AgentMiddleware):
                 HumanMessage(
                     content=memory_content,
                     id=f"{stable_id}__memory",
-                    additional_kwargs={
-                        "hide_from_ui": True,
-                        _DYNAMIC_CONTEXT_REMINDER_KEY: True,
-                        **provenance_kwargs(ContentKind.MEMORY, "dynamic_context_memory"),
-                    },
+                    additional_kwargs=memory_kwargs,
                 )
             )
 
@@ -560,7 +595,7 @@ class DynamicContextMiddleware(AgentMiddleware):
         # explicit id keeps the {id}__user swap described in the docstring.
         messages.append(
             original.model_copy(
-                update={"id": f"{stable_id}{INJECTED_USER_MESSAGE_ID_SUFFIX}"},
+                update={"id": user_copy_id},
             )
         )
         return messages
@@ -570,6 +605,9 @@ class DynamicContextMiddleware(AgentMiddleware):
         if not messages:
             return None
         memory_removals = self._disabled_memory_removals(messages)
+        # Every id the transcript already owns: the ID-swap derives its copy ids
+        # from the target's id, and a caller-supplied id can already hold one.
+        taken_ids = frozenset(str(message.id) for message in messages if message.id)
 
         current_date = _format_current_date()
         last_date = _last_injected_date(messages)
@@ -601,7 +639,7 @@ class DynamicContextMiddleware(AgentMiddleware):
                 memory_block is not None,
                 messages[target_idx].id,
             )
-            result_msgs = self._make_reminder_and_user_messages(messages[target_idx], date_reminder, memory_block, reminder_date=current_date)
+            result_msgs = self._make_reminder_and_user_messages(messages[target_idx], date_reminder, memory_block, reminder_date=current_date, taken_ids=taken_ids)
             return {"messages": [*memory_removals, *result_msgs]}
 
         if last_date == current_date:
@@ -613,7 +651,7 @@ class DynamicContextMiddleware(AgentMiddleware):
         if last_human_idx is None:
             return {"messages": memory_removals} if memory_removals else None
 
-        result_msgs = self._make_reminder_and_user_messages(messages[last_human_idx], self._build_date_update_reminder(), reminder_date=current_date)
+        result_msgs = self._make_reminder_and_user_messages(messages[last_human_idx], self._build_date_update_reminder(), reminder_date=current_date, taken_ids=taken_ids)
         logger.info("DynamicContextMiddleware: midnight crossing detected — injected date update before current turn")
         return {"messages": [*memory_removals, *result_msgs]}
 
