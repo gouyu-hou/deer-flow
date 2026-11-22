@@ -287,7 +287,11 @@ def test_symlink_write_updates_target_not_link(tmp_path, sandbox, mapped):
     assert alias.read_bytes() == b"new\n"
 
 
+@requires_atomic_revision
 def test_max_length_filename_can_be_overwritten(tmp_path, sandbox):
+    # 240 bytes keeps the name itself under the 255-byte limit; a nested
+    # tmp_path plus that name is past Windows' MAX_PATH, where the staged
+    # publish this covers does not run either (Windows writes in place).
     name = "r" * 240 + ".md"
     target = tmp_path / name
     target.write_bytes(b"old\n")
