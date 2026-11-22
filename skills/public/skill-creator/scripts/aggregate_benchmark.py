@@ -42,6 +42,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 
+class NoRunsError(ValueError):
+    """Raised when a benchmark directory yields no runs to aggregate."""
+
+
 def calculate_stats(values: list[float]) -> dict:
     """Calculate mean, stddev, min, max for a list of values."""
     if not values:
@@ -282,6 +286,15 @@ def generate_benchmark(benchmark_dir: Path, skill_name: str = "", skill_path: st
         for r in config
     ))
 
+    # A directory with no runs is a measurement failure, not a zero benchmark:
+    # writing zeroed statistics here would read as "measured, no improvement".
+    if not runs:
+        raise NoRunsError(
+            f"no eval runs found in {benchmark_dir} "
+            f"(looked in {benchmark_dir / 'eval-*'} and {benchmark_dir / 'runs' / 'eval-*'} "
+            "for run-*/grading.json)"
+        )
+
     benchmark = {
         "metadata": {
             "skill_name": skill_name or "<skill-name>",
@@ -389,7 +402,11 @@ def main():
         sys.exit(1)
 
     # Generate benchmark
-    benchmark = generate_benchmark(args.benchmark_dir, args.skill_name, args.skill_path)
+    try:
+        benchmark = generate_benchmark(args.benchmark_dir, args.skill_name, args.skill_path)
+    except NoRunsError as error:
+        print(f"Error: {error}", file=sys.stderr)
+        sys.exit(1)
 
     # Determine output paths
     output_json = args.output or (args.benchmark_dir / "benchmark.json")

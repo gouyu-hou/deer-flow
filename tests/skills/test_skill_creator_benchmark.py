@@ -414,3 +414,103 @@ def test_recorded_tokens_propagate_to_summary_delta_and_markdown(
     assert "| Tokens | 84852 ± 0 | 10000 ± 0 | +74852 |" in benchmark_script[
         "generate_markdown"
     ](benchmark)
+
+
+def test_cli_fails_without_writing_a_report_when_the_directory_has_no_runs(
+    tmp_path, benchmark_script
+):
+    """A benchmark dir with nothing to aggregate is a failure, not a 0% result."""
+    empty = tmp_path / "iteration"
+    empty.mkdir()
+
+    completed = subprocess.run(
+        [sys.executable, benchmark_script["__file__"], str(empty)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=30,
+    )
+
+    assert completed.returncode == 1
+    assert "no eval runs found" in completed.stderr
+    assert str(empty) in completed.stderr
+    assert not (empty / "benchmark.json").exists()
+    assert not (empty / "benchmark.md").exists()
+
+
+def test_cli_fails_when_run_directories_hold_no_grading_file(
+    tmp_path, benchmark_script
+):
+    """Config dirs whose runs all lack grading.json still yield no measurement."""
+    run_dir = tmp_path / "eval-1" / "with_skill" / "run-1"
+    run_dir.mkdir(parents=True)
+
+    completed = subprocess.run(
+        [sys.executable, benchmark_script["__file__"], str(tmp_path)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=30,
+    )
+
+    assert completed.returncode == 1
+    assert f"grading.json not found in {run_dir}" in completed.stdout
+    assert "no eval runs found" in completed.stderr
+    assert not (tmp_path / "benchmark.json").exists()
+
+
+def test_generate_benchmark_raises_instead_of_zeroing_an_empty_directory(
+    tmp_path, benchmark_script
+):
+    with pytest.raises(benchmark_script["NoRunsError"]):
+        benchmark_script["generate_benchmark"](tmp_path)
+
+
+def test_cli_fails_without_writing_a_report_when_the_directory_has_no_runs(
+    tmp_path, benchmark_script
+):
+    """A benchmark dir with nothing to aggregate is a failure, not a 0% result."""
+    empty = tmp_path / "iteration"
+    empty.mkdir()
+
+    completed = subprocess.run(
+        [sys.executable, benchmark_script["__file__"], str(empty)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=30,
+    )
+
+    assert completed.returncode == 1
+    assert "no eval runs found" in completed.stderr
+    assert str(empty) in completed.stderr
+    assert not (empty / "benchmark.json").exists()
+    assert not (empty / "benchmark.md").exists()
+
+
+def test_cli_fails_when_run_directories_hold_no_grading_file(
+    tmp_path, benchmark_script
+):
+    """Config dirs whose runs all lack grading.json still yield no measurement."""
+    run_dir = tmp_path / "eval-1" / "with_skill" / "run-1"
+    run_dir.mkdir(parents=True)
+
+    completed = subprocess.run(
+        [sys.executable, benchmark_script["__file__"], str(tmp_path)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=30,
+    )
+
+    assert completed.returncode == 1
+    assert f"grading.json not found in {run_dir}" in completed.stdout
+    assert "no eval runs found" in completed.stderr
+    assert not (tmp_path / "benchmark.json").exists()
+
+
+def test_generate_benchmark_raises_instead_of_zeroing_an_empty_directory(
+    tmp_path, benchmark_script
+):
+    with pytest.raises(benchmark_script["NoRunsError"]):
+        benchmark_script["generate_benchmark"](tmp_path)
