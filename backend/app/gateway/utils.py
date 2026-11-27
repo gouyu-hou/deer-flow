@@ -1,11 +1,18 @@
 """Shared utility helpers for the Gateway layer."""
 
 import hmac
+import re
+
+# C0 and C1 controls plus DEL, and the two Unicode line/paragraph separators
+# that some log viewers render as a line break. A thread id, an OAuth error or
+# a provider name reaches these helpers straight off the request, where a bare
+# CR or a terminal escape in the middle of a log line can rewrite the line.
+_CONTROL_CHARS_RE = re.compile("[\x00-\x1f\x7f-\x9f\u2028\u2029]")
 
 
 def sanitize_log_param(value: str) -> str:
     """Strip control characters to prevent log injection."""
-    return value.replace("\n", "").replace("\r", "").replace("\x00", "")
+    return _CONTROL_CHARS_RE.sub("", value)
 
 
 def constant_time_equals(a: str, b: str) -> bool:
